@@ -5,7 +5,7 @@ description: "Host agent for borgmatic backups over SSH. Version-aware config re
 
 license: MIT
 
-repository: https://github.com/shrugpw/swamp-borgmatic
+repository: https://github.com/shrugpw/swamp-extensions
 
 additionalFiles:
   - README.md

@@ -47,7 +47,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 
 // ===========================================================================
 // Global arguments — connection seam + the DESIRED STATE of this backup config.
