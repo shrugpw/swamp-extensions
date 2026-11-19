@@ -1,0 +1,30 @@
+manifestVersion: 1
+name: "@shrug/borgwarehouse"
+version: "2026.11.19.1"
+license: MIT
+description: "Swamp-native control of a BorgWarehouse backup-monitor server. HYBRID transport: HTTP REST API for all CRUD/alert/key/compact/status-cron (never edits on-host repo.json, which would race the app's lowdb mutex), and SSH + podman-exec for the one API gap: a hardened, DESTRUCTIVE pruneRepo. prune carries a full safety envelope -- caller-asserted repositoryName interlock, passphrase over ssh STDIN never in argv, --dry-run default with confirm + a mandatory keep rule + a delete-count floor, never auto break-lock, best-effort compact after. Every mutation is audited on success and failure; all secrets are vault-backed."
+
+repository: https://github.com/shrugpw/swamp-extensions
+
+paths:
+  base: manifest
+
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+
+models:
+  - borgwarehouse.ts
+
+# Empty platforms == universal. REST verbs run from wherever swamp runs; the one
+# SSH verb (pruneRepo) shells out to `ssh` on that same machine. The borg/podman
+# tooling it drives lives on the *remote* BorgWarehouse host.
+platforms: []
+
+labels:
+  - borgwarehouse
+  - borg
+  - backup
+  - monitoring
+  - prune
+  - retention
