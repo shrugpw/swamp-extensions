@@ -1,0 +1,63 @@
+manifestVersion: 1
+name: "@shrug/content-studio"
+version: "2026.11.19.1"
+description: |-
+  # content-studio
+
+  A swamp-native toolkit for keeping a body of documents **sendable**: a reusable
+  content hub plus the checks that catch what makes a document unshippable
+  (unresolved placeholders, draft scaffolding, internal-filename leakage).
+
+  Two domain-agnostic behavior types:
+
+  - **`library`** -- the canonical answer / content hub (the model a content-review
+    professional works with). Entries keyed by `key`, each carrying value, scope
+    (company / state / namespace), status, owner, review cadence, tags, the literal
+    placeholder `tokens` it satisfies, and provenance. Methods: `lookup` (read),
+    `upsert` (gated write), `review` (approve / retire), `audit` (flip entries past
+    their review cadence to `expiring`).
+  - **`document`** -- a piece of content under review. Methods: `scan` (defect
+    inventory, each placeholder mapped to a library key via its tokens), `fill`
+    (resolve placeholders from library entries passed in as a method argument;
+    dry-run-gated, writes only on `confirm=true`), `check` (the sendability gate --
+    severity-rated findings if any bracket, draft marker, or internal filename
+    survives), `render` (PDF / DOCX via an injectable pandoc runner).
+
+  Cross-type library data reaches `document.fill` as a method argument wired by a
+  pipeline via CEL -- a method never reads another behavior's resources.
+
+  Bundles a generic `content-review-pipeline` stagecraft factory template and a
+  `content-review` skill. The types carry no instance data; consumer values live
+  in local instance config only.
+license: MIT
+repository: https://github.com/shrugpw/swamp-extensions
+
+paths:
+  base: manifest
+
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+  - examples/content-review-pipeline.yaml
+
+models:
+  - library.ts
+  - document.ts
+
+skills:
+  - content-review
+
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+
+platforms: []
+
+labels:
+  - content
+  - review
+  - library
+  - document
+  - sendability

@@ -1,0 +1,398 @@
+definition:
+  schemaVersion: 5
+  description: |-
+    A piece of content from intake to a sendable, rendered artifact. Each
+    document is one work item: inventory its defects, resolve its placeholders
+    against an approved content library, pass a sendability review, clear a
+    (conditional) counsel gate, get a person's approval, and render it.
+
+    For: any document reused from a shared answer library -- policies, notices,
+    proposals, statements of work, onboarding packets, anything that must go out
+    clean. This template is GENERIC: it names no domain, no organization, and no
+    values. A consumer copies it, binds the document and library instances, and
+    adapts the stage prompts.
+
+    Change first: the sendability-review prompt (your content-professional
+    reviewer's voice and what never ships), the counsel gate's CEL condition
+    (which documents need legal review), and the library/document instance names
+    the stages reference.
+
+    How the library reaches the document: a document method never reads another
+    behavior's resources. The resolve stage reads the bound library's approved
+    entries with CEL data.latest(<library>, "entries") and passes them INTO
+    document.fill as its `entries` argument. Replace <library> and <document>
+    below with your instance names.
+
+  stages:
+    - id: intake
+      initial: true
+      tracker: { status: open }
+      description: >-
+        Inventory the document's defects and classify it. Run document.scan,
+        record the defect inventory and the placeholder-to-question list, and
+        decide whether the document needs legal review.
+      work:
+        mode: interactive
+        systemPrompt: |
+          Run the document's scan method to inventory its defects: unresolved
+          bracket placeholders, draft/scaffolding markers, internal-filename
+          references, broken cross-refs, and missing disclaimers. Pass the bound
+          library's entries so each placeholder maps to a library key or is
+          flagged needs-new-entry.
+
+          Record intake: the document's title and path, whether it is a legal
+          document (so the counsel gate knows), the defect counts, and the list
+          of placeholders that still need a decision (the needs-new-entry ones).
+      artifacts:
+        - name: intake
+          schema:
+            type: object
+            required: [title, path, legal, defectCount]
+            properties:
+              title: { type: string, minLength: 1 }
+              path:
+                description: Where the document is, a path or a link.
+                type: string
+                minLength: 1
+              legal:
+                description: >-
+                  True when this document needs legal review; drives the counsel
+                  gate.
+                type: boolean
+              defectCount: { type: integer, minimum: 0 }
+              openPlaceholders:
+                description: Placeholders with no approved library entry yet.
+                type: array
+                items: { type: string, minLength: 1 }
+      transitions:
+        - name: start
+          to: resolve
+          gates:
+            - type: artifact-exists
+              config: { artifact: intake }
+
+    - id: resolve
+      tracker: { status: in_progress }
+      maxCycles: 5
+      description: >-
+        Resolve every placeholder, de-scaffold, and fix references to produce a
+        clean draft.
+      work:
+        mode: interactive
+        systemPrompt: |
+          Produce the clean draft.
+
+          For placeholders already approved in the library: fetch the library's
+          approved entries with data.latest("<library>", "entries") and pass
+          them as the `entries` argument to the document's fill method. The
+          document type never reads the library directly; the entries are a
+          method argument.
+
+          fill is non-destructive: with confirm=true it writes a filled draft
+          beside the original (<path>.filled.md by default) and leaves the
+          original's placeholders intact. The filled draft is what the rest of
+          the pipeline gates and renders.
+
+          For placeholders with no approved entry (the intake openPlaceholders):
+          get the one correct answer from the person, upsert it into the library
+          (library.upsert, confirm=true, with provenance), then fill.
+
+          Remove every draft/scaffolding marker, and replace internal-filename
+          references with reader-facing titles. When a review sent this back,
+          read the injected sendability-review and address each finding.
+
+          Record resolved: the path to the FILLED draft (the <path>.filled.md
+          fill wrote, not the original) and the list of library keys used. The
+          sendability-review and render stages read this path.
+        context:
+          inject: [intake, sendability-review]
+      artifacts:
+        - name: resolved
+          schema:
+            type: object
+            required: [path]
+            properties:
+              path: { type: string, minLength: 1 }
+              keysUsed:
+                description: Library keys whose values filled this document.
+                type: array
+                items: { type: string, minLength: 1 }
+      transitions:
+        - name: submit
+          to: sendability-review
+          gates:
+            - type: artifact-exists
+              config: { artifact: resolved }
+
+    - id: sendability-review
+      tracker: { status: in_progress }
+      description: >-
+        A content-professional reviewer runs the sendability gate. An open
+        blocking finding sends the draft back to resolve; a clean gate lets it
+        through.
+      work:
+        mode: dispatch
+        systemPrompt: |
+          You are a content-review professional -- the role that curates an
+          organization's answer library and signs off that a document is fit to
+          send. You are not a copy editor; you are the last line before a
+          document leaves under the owner's name.
+
+          Run the document's check method (the sendability gate) on the filled
+          draft at {{path}}: pass {{path}} as the check method's `inputPath`
+          argument so the gate runs on the resolved draft, not the original with
+          its placeholders. Read its findings, then apply your own lens on top of
+          the mechanical result:
+
+          - Nothing unfinished ships: no surviving bracket placeholder, no
+            draft/scaffolding marker, no internal-filename reference, no broken
+            cross-reference, no missing required disclaimer.
+          - Voice and consistency: the document reads in one consistent voice,
+            says the same thing the library says everywhere else, and uses
+            reader-facing titles, not internal names.
+          - Fitness: it answers what the reader needs and claims nothing the
+            organization cannot stand behind.
+
+          Rate a finding critical or high only when sending the document as-is
+          would be wrong, harmful, or unfinished; voice and wording are medium
+          at most. Give the smallest adequate fix for each. Report findings with
+          severities and do not soften a real defect.
+        let:
+          path: artifacts["resolved"].payload.path
+        context:
+          inject: [resolved]
+      artifacts:
+        - name: sendability-review
+          kind: findings
+          reviews: resolved
+      transitions:
+        - name: accept
+          to: counsel
+          gates:
+            - type: artifact-fresh
+              config: { artifact: sendability-review, recordedThisCycle: true }
+            - type: findings-clear
+              config: { artifact: sendability-review, blocking: [critical, high] }
+        - name: rework
+          to: resolve
+          description: >-
+            The fresh sendability review has an open critical or high finding, so
+            the draft goes back to resolve.
+          gates:
+            - type: artifact-fresh
+              config: { artifact: sendability-review, recordedThisCycle: true }
+            - type: findings-open
+              config: { artifact: sendability-review, blocking: [critical, high] }
+
+    - id: counsel
+      tracker: { status: in_progress }
+      description: >-
+        Legal documents pass a counsel gate; non-legal documents skip straight
+        to approval. When no counsel is engaged, a person records a deferred
+        internal-review waiver and the document proceeds flagged counsel-pending.
+      work:
+        mode: interactive
+        systemPrompt: |
+          If this is a legal document (intake.legal is true) and counsel is
+          engaged, route the draft to counsel and record their sign-off. If no
+          counsel is engaged, explain to the person that proceeding records a
+          deferred-waiver: the document goes out flagged counsel-pending and a
+          later pass re-opens it when counsel lands. Record the waiver only on
+          the person's word.
+        context:
+          inject: [intake, resolved]
+      evidence:
+        - name: counsel-waiver
+          description: >-
+            A person's record that legal review is deferred and the document may
+            proceed counsel-pending.
+          recordedBy: person
+          schema:
+            type: object
+            required: [decision]
+            additionalProperties: false
+            properties:
+              decision:
+                description: The person's deferral decision, in their words.
+                type: string
+                minLength: 1
+      transitions:
+        - name: skip
+          to: approve
+          description: >-
+            A non-legal document needs no counsel gate.
+          gates:
+            - type: cel
+              config:
+                expr: '"intake" in artifacts && artifacts["intake"].payload.legal == false'
+                message: this document is legal; take the waiver or counsel path
+        - name: waive
+          to: approve
+          description: >-
+            A legal document proceeds with a deferred internal-review waiver
+            recorded by a person.
+          gates:
+            - type: cel
+              config:
+                expr: '"intake" in artifacts && artifacts["intake"].payload.legal == true'
+                message: this document is not legal; skip the counsel gate
+            - type: evidence-recorded
+              config: { name: counsel-waiver }
+
+    - id: approve
+      tracker: { status: in_progress }
+      description: >-
+        A person reads the sendable draft and approves it for sending, or sends
+        it back with their feedback.
+      work:
+        mode: interactive
+        systemPrompt: |
+          Show the person the sendable draft at {{path}} and the sendability
+          review. Ask them to approve it for sending, or to say what to change.
+        let:
+          path: artifacts["resolved"].payload.path
+        context:
+          inject: [resolved, sendability-review]
+      evidence:
+        - name: approval-feedback
+          description: >-
+            A person's feedback when they send a draft back instead of approving
+            it; revise needs it.
+          recordedBy: person
+          schema:
+            type: object
+            required: [feedback]
+            additionalProperties: false
+            properties:
+              feedback: { type: string, minLength: 1 }
+      transitions:
+        - name: approve
+          to: render
+          gates:
+            - type: human-approval
+              config: { id: send-approval }
+        - name: revise
+          to: resolve
+          manual: true
+          description: >-
+            A person sent the draft back. Manual, so it never fires on its own,
+            and the person's feedback is recorded first.
+          gates:
+            - type: evidence-recorded
+              config: { name: approval-feedback }
+
+    - id: render
+      tracker: { status: in_progress }
+      description: >-
+        Render the approved draft to its final format (PDF or DOCX) and record
+        the output path.
+      work:
+        mode: interactive
+        systemPrompt: |
+          Render the approved filled draft at {{path}} with the document's
+          render method: pass {{path}} as the render method's `inputPath`
+          argument and confirm=true, to the format the person wants, and record
+          rendered with the output path.
+        let:
+          path: artifacts["resolved"].payload.path
+      evidence:
+        - name: rendered
+          schema:
+            type: object
+            required: [outputPath]
+            properties:
+              outputPath: { type: string, minLength: 1 }
+      transitions:
+        - name: done
+          to: done
+          gates:
+            - type: evidence-recorded
+              config: { name: rendered }
+
+    - id: done
+      terminal: true
+      tracker: { status: shipped }
+
+    - id: abandoned
+      terminal: true
+      tracker: { status: closed }
+
+  globalTransitions:
+    - name: abandon
+      to: abandoned
+      gates:
+        - type: human-approval
+          config: { id: abandon-confirmation }
+
+scenarios:
+  - scenario: dirty-to-rendered
+    description: >-
+      A document walks from intake to rendered. A high sendability finding sends
+      it back; the clean pass clears it; a person approves and it renders.
+    steps:
+      - record: { artifact: intake }
+        payload:
+          title: A reused policy
+          path: drafts/policy.md
+          legal: false
+          defectCount: 3
+          openPlaceholders: ["[core hours]"]
+      - move: start
+      - record: { artifact: resolved }
+        payload: { path: drafts/policy.clean.md, keysUsed: [pay-schedule] }
+      - move: submit
+      - record: { artifact: sendability-review }
+        payload:
+          findings:
+            - id: S1
+              severity: high
+              description: An internal filename still appears in the body
+      - move: accept
+        expect: { refused: "unresolved blocking finding" }
+      - move: rework
+      - expect: { stage: resolve }
+      - record: { artifact: resolved }
+        payload: { path: drafts/policy.clean.md, keysUsed: [pay-schedule, core-hours] }
+      - move: submit
+      - record: { artifact: sendability-review }
+        payload: { findings: [] }
+      - move: accept
+      - expect: { stage: counsel }
+      - move: skip
+      - expect: { stage: approve }
+      - move: approve
+        expect: { refused: "awaiting approval 'send-approval'" }
+      - approve: send-approval
+      - move: approve
+      - expect: { stage: render }
+      - record: { evidence: rendered }
+        payload: { outputPath: out/policy.pdf }
+      - move: done
+      - expect: { stage: done }
+  - scenario: legal-waiver
+    description: >-
+      A legal document cannot skip the counsel gate; it proceeds only after a
+      person records a deferred internal-review waiver.
+    steps:
+      - record: { artifact: intake }
+        payload:
+          title: A legal notice
+          path: drafts/notice.md
+          legal: true
+          defectCount: 1
+      - move: start
+      - record: { artifact: resolved }
+        payload: { path: drafts/notice.clean.md }
+      - move: submit
+      - record: { artifact: sendability-review }
+        payload: { findings: [] }
+      - move: accept
+      - expect: { stage: counsel }
+      - move: skip
+        expect: { refused: "this document is legal" }
+      - move: waive
+        expect: { refused: "evidence 'counsel-waiver' has not been recorded" }
+      - record: { evidence: counsel-waiver }
+        payload: { decision: No counsel engaged yet; proceed counsel-pending }
+      - move: waive
+      - expect: { stage: approve }
