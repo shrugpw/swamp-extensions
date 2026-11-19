@@ -274,15 +274,33 @@ export const sshExec: TargetRunner = async (cfg, script) => {
     stderr: "piped",
   });
   const child = command.spawn();
-  const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(script));
-  await writer.close();
-  const { code, stdout, stderr } = await child.output();
-  return {
-    stdout: new TextDecoder().decode(stdout),
-    stderr: new TextDecoder().decode(stderr),
-    code,
-  };
+  try {
+    const writer = child.stdin.getWriter();
+    try {
+      await writer.write(new TextEncoder().encode(script));
+    } finally {
+      // A rejected write leaves the writer locked; close() releases it. Swallow
+      // a close rejection (already-broken pipe) so the original write error --
+      // not a secondary close error -- surfaces to the catch below.
+      await writer.close().catch(() => {});
+    }
+    const { code, stdout, stderr } = await child.output();
+    return {
+      stdout: new TextDecoder().decode(stdout),
+      stderr: new TextDecoder().decode(stderr),
+      code,
+    };
+  } catch (e) {
+    // The host refused the piped STDIN before output() was awaited: kill and
+    // reap the ssh child so we don't leak an orphaned subprocess + its handles.
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Child already exited -- nothing to reap.
+    }
+    await child.status.catch(() => {});
+    throw e;
+  }
 };
 
 /** SSH exit 255 means the transport itself failed (host unreachable, auth). */

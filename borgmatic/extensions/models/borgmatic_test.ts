@@ -29,6 +29,7 @@ import {
   remoteShellArgv,
   renderBorgmaticConfig,
   shQuote,
+  sshExec,
   strToBase64,
   styledPattern,
   targetDesc,
@@ -1060,4 +1061,74 @@ Deno.test("SEC-4: redactPassphraseLeaks handles escaped quotes with no tail leak
   const red = redactPassphraseLeaks(leaked);
   assertNotMatch(red, /SECRETTAIL/);
   assertMatch(red, /encryption_passphrase: <redacted>/);
+});
+
+// --- sshExec error-path: no leaked subprocess on a broken STDIN pipe ---------
+//
+// Regression for the resource leak fixed in 2026.11.19.2: if the piped STDIN
+// write rejects (host refuses, broken pipe) before child.output() is awaited,
+// sshExec must kill AND reap the ssh child instead of orphaning it. We stub
+// Deno.Command with a fake whose stdin writer rejects, then assert the child
+// was killed (SIGKILL) and reaped (status awaited) and that output() -- the
+// stream-draining collect -- was never reached.
+Deno.test("sshExec: stdin write rejection kills+reaps the ssh child", async () => {
+  const origCommand = Deno.Command;
+  let killed: string | undefined;
+  let statusAwaited = false;
+  let outputCalled = false;
+
+  class FakeCommand {
+    constructor(_cmd: string | URL, _opts: unknown) {}
+    spawn() {
+      return {
+        stdin: {
+          getWriter() {
+            return {
+              write(_chunk: Uint8Array) {
+                return Promise.reject(
+                  new Error("broken pipe: host refused STDIN"),
+                );
+              },
+              close() {
+                return Promise.resolve();
+              },
+              releaseLock() {},
+            };
+          },
+        },
+        kill(sig: string) {
+          killed = sig;
+        },
+        get status() {
+          statusAwaited = true;
+          return Promise.resolve({ success: false, code: 137, signal: null });
+        },
+        output() {
+          outputCalled = true;
+          return Promise.resolve({
+            code: 0,
+            stdout: new Uint8Array(),
+            stderr: new Uint8Array(),
+          });
+        },
+      };
+    }
+  }
+
+  // deno-lint-ignore no-explicit-any
+  (Deno as any).Command = FakeCommand;
+  try {
+    await assertRejects(
+      () => sshExec(baseCfg, "echo hi\n"),
+      Error,
+      "broken pipe",
+    );
+  } finally {
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).Command = origCommand;
+  }
+
+  assertEquals(killed, "SIGKILL"); // child was killed on the error path
+  assertEquals(statusAwaited, true); // child was reaped (status awaited)
+  assertEquals(outputCalled, false); // output() never reached: no dangling collect
 });

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@shrug/borgwarehouse"
-version: "2026.11.19.1"
+version: "2026.11.19.2"
 license: MIT
 description: "Swamp-native control of a BorgWarehouse backup-monitor server. HYBRID transport: HTTP REST API for all CRUD/alert/key/compact/status-cron (never edits on-host repo.json, which would race the app's lowdb mutex), and SSH + podman-exec for the one API gap: a hardened, DESTRUCTIVE pruneRepo. prune carries a full safety envelope -- caller-asserted repositoryName interlock, passphrase over ssh STDIN never in argv, --dry-run default with confirm + a mandatory keep rule + a delete-count floor, never auto break-lock, best-effort compact after. Every mutation is audited on success and failure; all secrets are vault-backed."
 
