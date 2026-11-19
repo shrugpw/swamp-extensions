@@ -231,7 +231,17 @@ const GlobalArgsSchema = z.object({
     .default([])
     .describe("Directories to back up (borgmatic source_directories)"),
   excludePatterns: z
-    .array(z.string())
+    .array(
+      // Reject newlines (like `frequency` above): a pattern is rendered verbatim
+      // into a yamlDq double-quoted scalar, which escapes backslash and quote
+      // but NOT a newline, so a crafted entry could otherwise fold onto / break
+      // out of the exclude_patterns line in the rendered config.
+      z
+        .string()
+        .refine((p) => !/[\r\n]/.test(p), {
+          message: "excludePatterns entry must not contain a newline",
+        }),
+    )
     .default([])
     .describe(
       "Paths/globs to EXCLUDE from the backup (borgmatic exclude_patterns), one " +

@@ -544,6 +544,24 @@ Deno.test("checks: schema rejects malformed / newline-injected frequency", () =>
   assertThrows(() => GARGS.parse({ host: "h", checks: [{ name: "bogus" }] }));
 });
 
+Deno.test("excludePatterns: schema rejects newline-injected entries", () => {
+  // legitimate patterns accepted (bare, prefixed, and empty default).
+  GARGS.parse({ host: "h", excludePatterns: ["/home/user/.cache", "re:^/b$"] });
+  GARGS.parse({ host: "h" });
+  // newline-injection rejected (entry is rendered verbatim into a yamlDq scalar
+  // that does not escape newlines).
+  assertThrows(() =>
+    GARGS.parse({
+      host: "h",
+      excludePatterns: ["/a\nrepositories: []"],
+    })
+  );
+  // carriage return rejected too.
+  assertThrows(() =>
+    GARGS.parse({ host: "h", excludePatterns: ["/a\rfoo"] })
+  );
+});
+
 // --- script builders --------------------------------------------------------
 
 Deno.test("install script is idempotent + covers apt and dnf", () => {
