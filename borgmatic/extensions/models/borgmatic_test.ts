@@ -30,6 +30,7 @@ import {
   renderBorgmaticConfig,
   shQuote,
   strToBase64,
+  styledPattern,
   targetDesc,
   type TargetRunner,
   usesCommandsSyntax,
@@ -121,6 +122,10 @@ const baseCfg: GlobalArgs = {
   encryptionPassphrase: "s3kr3t-phrase",
   compression: "lz4",
   retention: { keepDaily: 7, keepWeekly: 4, keepMonthly: 6 },
+  excludePatterns: [],
+  excludePatternStyle: "sh",
+  appendOnly: false,
+  checks: [],
   hooks: {
     beforeBackup: [
       'sqlite3 /var/lib/docker/volumes/myapp-config/_data/data/db.sqlite3 "PRAGMA wal_checkpoint(TRUNCATE);"',
@@ -294,6 +299,251 @@ Deno.test("redactConfig hides the inline passphrase", () => {
   assertMatch(red, /encryption_passphrase: "<redacted>"/);
 });
 
+// --- backward-compat goldens ------------------------------------------------
+// The four pub-15 additions are all default-off, so a config with none of them
+// set MUST render byte-identical to the pre-pub-15 output. These full-string
+// goldens lock that. (The header line carries the same literal em-dash the
+// rendered config header comment contains, so the match is exact.)
+
+const GOLDEN_HEAD = [
+  "# Managed by swamp (@shrug/borgmatic). Do not edit by hand — the source of",
+  "# truth is the swamp model that renders this file.",
+  "source_directories:",
+  '    - "/var/lib/docker/volumes/myapp-config/_data"',
+  "",
+  "repositories:",
+  '    - path: "ssh://borgwarehouse@192.0.2.10:2222/./abcd1234"',
+  '      label: "myapp"',
+  "",
+  'encryption_passphrase: "s3kr3t-phrase"',
+  `ssh_command: "ssh -i '/root/.ssh/borg' -o StrictHostKeyChecking=accept-new"`,
+  'compression: "lz4"',
+  "",
+  "keep_daily: 7",
+  "keep_weekly: 4",
+  "keep_monthly: 6",
+  "",
+];
+// The before/after hook quoted value (identical across 1.9 and 2.0).
+const HOOK_Q =
+  '"sqlite3 /var/lib/docker/volumes/myapp-config/_data/data/db.sqlite3 \\"PRAGMA wal_checkpoint(TRUNCATE);\\""';
+const GOLDEN_19 = [
+  ...GOLDEN_HEAD,
+  "# borgmatic 1.9.x legacy hook (the 2.0 `commands:` syntax is not supported here).",
+  "before_backup:",
+  `    - ${HOOK_Q}`,
+  "",
+].join("\n");
+const GOLDEN_20 = [
+  ...GOLDEN_HEAD,
+  "commands:",
+  "    - before: action",
+  "      when:",
+  "          - create",
+  "      run:",
+  `          - ${HOOK_Q}`,
+  "",
+].join("\n");
+
+Deno.test("backward-compat: render(1.9) golden unchanged with all new features off", () => {
+  assertEquals(renderBorgmaticConfig(baseCfg, V19), GOLDEN_19);
+});
+
+Deno.test("backward-compat: render(2.0) golden unchanged with all new features off", () => {
+  assertEquals(renderBorgmaticConfig(baseCfg, V20), GOLDEN_20);
+});
+
+Deno.test("backward-compat: redact golden unchanged with all new features off", () => {
+  const red = redactConfig(renderBorgmaticConfig(baseCfg, V19));
+  assertEquals(
+    red,
+    GOLDEN_19.replace(
+      'encryption_passphrase: "s3kr3t-phrase"',
+      'encryption_passphrase: "<redacted>"',
+    ),
+  );
+});
+
+Deno.test("backward-compat: default-off omits all four new keys", () => {
+  const out = renderBorgmaticConfig(baseCfg, V19);
+  assertEquals(/exclude_patterns:/.test(out), false);
+  assertEquals(/skip_actions:/.test(out), false);
+  assertEquals(/^checks:/m.test(out), false);
+});
+
+// --- A1: exclude_patterns ----------------------------------------------------
+
+Deno.test("styledPattern prefixes bare patterns, passes explicit prefixes through", () => {
+  assertEquals(styledPattern("/home/user/.cache", "sh"), "sh:/home/user/.cache");
+  // every explicit prefix is passed through untouched
+  for (const pre of ["fm", "sh", "re", "pp", "pf"]) {
+    assertEquals(styledPattern(`${pre}:/x`, "sh"), `${pre}:/x`);
+  }
+  // style override is honoured for bare patterns
+  assertEquals(styledPattern("/x", "fm"), "fm:/x");
+});
+
+Deno.test("exclude_patterns: one entry per line, style-prefixed, never space-joined", () => {
+  const out = renderBorgmaticConfig(
+    {
+      ...baseCfg,
+      excludePatterns: ["/home/user/.cache", "/home/user/dev/client-a"],
+    },
+    V19,
+  );
+  const lines = out.split("\n");
+  const i = lines.findIndex((l) => l === "exclude_patterns:");
+  assertEquals(i >= 0, true);
+  // bare patterns get the default sh: prefix, one per line.
+  assertEquals(lines[i + 1], '    - "sh:/home/user/.cache"');
+  assertEquals(lines[i + 2], '    - "sh:/home/user/dev/client-a"');
+  // NEVER space-joined into a single entry.
+  assertNotMatch(out, /\.cache"\s+"?sh:/);
+  assertNotMatch(out, /\.cache sh:/);
+});
+
+Deno.test("exclude_patterns: style override + explicit-prefix passthrough in render", () => {
+  const out = renderBorgmaticConfig(
+    { ...baseCfg, excludePatternStyle: "fm", excludePatterns: ["/a", "re:^/b$"] },
+    V19,
+  );
+  assertMatch(out, /^ {4}- "fm:\/a"$/m);
+  assertMatch(out, /^ {4}- "re:\^\/b\$"$/m); // explicit re: NOT double-prefixed
+  assertNotMatch(out, /"fm:re:/);
+});
+
+Deno.test("exclude_patterns omitted when none configured (default off)", () => {
+  assertEquals(/exclude_patterns:/.test(renderBorgmaticConfig(baseCfg, V19)), false);
+});
+
+// A depersonalized fixture mirroring the SHAPE of change-47's real exclude list
+// (real tenant/employer identifiers scrubbed): every entry ABSOLUTE-anchored
+// under a home root, mixing client/employer tenant paths, glob worktree paths,
+// and scoped cache globs. Pinned to its rendered form so a regression to
+// unanchored or over-floated (**/) patterns fails CI (plan-review F1).
+const CHANGE47_EXCLUDES = [
+  "/home/user/Nextcloud/Clients",
+  "/home/user/.local/share/mail/user@employer.example",
+  "/home/user/dev/client-a",
+  "/home/user/dev/client-b",
+  "/home/user/dev/go/pkg",
+  "/home/user/.herdr/worktrees/client-c-*",
+  "/home/user/.herdr/worktrees/*client-b*",
+  "/home/user/.herdr/worktrees/*contractor*",
+  "/home/user/recovery-20260101",
+  "/home/user/.cache",
+  "/home/user/.local/share/Trash",
+  "/home/user/.config/*/Cache",
+  "/home/user/.var/app/*/*/Cache",
+];
+
+Deno.test("exclude_patterns: change-47 real list renders anchored-absolute (regression guard)", () => {
+  const out = renderBorgmaticConfig(
+    { ...baseCfg, excludePatterns: CHANGE47_EXCLUDES },
+    V19,
+  );
+  const lines = out.split("\n");
+  const start = lines.findIndex((l) => l === "exclude_patterns:");
+  assertEquals(start >= 0, true);
+  const rendered = lines.slice(start + 1, start + 1 + CHANGE47_EXCLUDES.length);
+  // EXACT pinned rendered form: default sh: style + absolute anchor, one per line.
+  assertEquals(rendered, CHANGE47_EXCLUDES.map((p) => `    - "sh:${p}"`));
+  // Regression guard: every pattern is absolute-anchored; none floated with **/.
+  for (const l of rendered) {
+    assertMatch(l, /^ {4}- "sh:\/home\/user\//);
+    assertNotMatch(l, /"sh:\*\*\//);
+  }
+});
+
+// --- A2/C: skip_actions (append-only) ---------------------------------------
+
+Deno.test("skip_actions: appendOnly expands to [prune, compact]", () => {
+  const out = renderBorgmaticConfig({ ...baseCfg, appendOnly: true }, V19);
+  const lines = out.split("\n");
+  const i = lines.findIndex((l) => l === "skip_actions:");
+  assertEquals(i >= 0, true);
+  assertEquals(lines[i + 1], "    - prune");
+  assertEquals(lines[i + 2], "    - compact");
+});
+
+Deno.test("skip_actions: skipActions overrides appendOnly", () => {
+  const out = renderBorgmaticConfig(
+    { ...baseCfg, appendOnly: true, skipActions: ["check"] },
+    V19,
+  );
+  assertMatch(out, /skip_actions:\n {4}- check/);
+  // the appendOnly default [prune, compact] is fully overridden, not merged.
+  assertEquals(/^ {4}- prune$/m.test(out), false);
+  assertEquals(/^ {4}- compact$/m.test(out), false);
+});
+
+Deno.test("skip_actions omitted when appendOnly off and no skipActions (default off)", () => {
+  assertEquals(/skip_actions:/.test(renderBorgmaticConfig(baseCfg, V19)), false);
+});
+
+Deno.test("appendOnly composes with a checks: block without re-enabling prune/compact", () => {
+  const out = renderBorgmaticConfig(
+    {
+      ...baseCfg,
+      appendOnly: true,
+      checks: [
+        { name: "repository", frequency: "1 day" },
+        { name: "data", frequency: "1 month" },
+      ],
+    },
+    V19,
+  );
+  // append-only skips prune+compact ...
+  assertMatch(out, /skip_actions:\n {4}- prune\n {4}- compact/);
+  // ... and the read-only checks: block composes alongside it ...
+  assertMatch(out, /checks:\n {4}- name: repository\n {6}frequency: "1 day"/);
+  assertMatch(out, /- name: data\n {6}frequency: "1 month"/);
+  // ... with no contradiction: check is NOT skipped, prune/compact NOT re-run.
+  assertEquals(/^ {4}- check$/m.test(out), false);
+});
+
+// --- A3: checks frequency throttling ----------------------------------------
+
+Deno.test("checks: render name (+ optional frequency); default off omits", () => {
+  assertEquals(/^checks:/m.test(renderBorgmaticConfig(baseCfg, V19)), false);
+  const out = renderBorgmaticConfig(
+    {
+      ...baseCfg,
+      checks: [{ name: "archives", frequency: "2 weeks" }, { name: "spot" }],
+    },
+    V19,
+  );
+  assertMatch(
+    out,
+    /checks:\n {4}- name: archives\n {6}frequency: "2 weeks"\n {4}- name: spot\n/,
+  );
+  // a check with no frequency renders the name only (no frequency line).
+  assertNotMatch(out, /name: spot\n {6}frequency:/);
+});
+
+Deno.test("checks: schema rejects malformed / newline-injected frequency", () => {
+  // valid forms accepted.
+  GARGS.parse({ host: "h", checks: [{ name: "repository", frequency: "1 day" }] });
+  GARGS.parse({ host: "h", checks: [{ name: "data", frequency: "always" }] });
+  GARGS.parse({ host: "h", checks: [{ name: "data" }] });
+  // space-less form rejected (regex requires a single literal space).
+  assertThrows(() =>
+    GARGS.parse({ host: "h", checks: [{ name: "data", frequency: "1day" }] })
+  );
+  // newline-injection rejected (literal space, NOT \s+, so no newline match).
+  assertThrows(() =>
+    GARGS.parse({
+      host: "h",
+      checks: [{ name: "data", frequency: "1 day\nskip_actions: []" }],
+    })
+  );
+  // unknown unit + unknown check name rejected.
+  assertThrows(() =>
+    GARGS.parse({ host: "h", checks: [{ name: "data", frequency: "1 fortnight" }] })
+  );
+  assertThrows(() => GARGS.parse({ host: "h", checks: [{ name: "bogus" }] }));
+});
+
 // --- script builders --------------------------------------------------------
 
 Deno.test("install script is idempotent + covers apt and dnf", () => {
@@ -318,6 +568,18 @@ Deno.test("configure script: keygen guard, apply-gate, atomic swap, timer", () =
 Deno.test("configure script omits timer when schedule unset", () => {
   const s = buildConfigureScript({ ...baseCfg, schedule: undefined }, "X\n");
   assertEquals(/systemctl enable --now borgmatic\.timer/.test(s), false);
+});
+
+Deno.test("configure script emits the PUBKEY_B64 marker OUTSIDE the keygen if/else", () => {
+  const s = buildConfigureScript(baseCfg, "RENDERED\n");
+  assertMatch(s, /SWAMP_BORG_PUBKEY_B64=\$\(base64 -w0 < "\$KEYP\.pub"/);
+  // it is emitted after the keygen block's closing `fi` (unconditional), not
+  // nested inside either the generate or the skip branch.
+  const fiIdx = s.indexOf("\nfi\n");
+  const pubIdx = s.indexOf("SWAMP_BORG_PUBKEY_B64=");
+  assertEquals(fiIdx >= 0 && pubIdx > fiIdx, true);
+  // and it precedes the render/validate stage.
+  assertEquals(pubIdx < s.indexOf("config validate"), true);
 });
 
 Deno.test("initRepo script guards repo-create with repo-info", () => {
@@ -403,6 +665,43 @@ Deno.test("configure: happy path writes config + attempt (1.9 → before_backup)
   // install runs first (ensureInstalled), then version detection before writing.
   assertMatch(calls[0], /command -v 'borgmatic'/);
   assertMatch(calls[1], /--version/);
+});
+
+Deno.test("configure: surfaces borgPublicKey from the PUBKEY_B64 marker", async () => {
+  const { context, writes } = fakeContext(baseCfg);
+  const pubtext = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 borg@192.0.2.20\n";
+  const b64 = strToBase64(pubtext);
+  const { run } = scriptedRunner([
+    { match: "--version", result: { stdout: "borgmatic 1.9.14\n" } },
+    {
+      match: "config validate",
+      result: {
+        stdout: `SWAMP_BORG_KEYGEN_DONE\nSWAMP_BORG_PUBKEY_B64=${b64}\n` +
+          "SWAMP_BORG_VALIDATE_OK\nSWAMP_BORG_CONFIG_OK\nSWAMP_BORG_TIMER_OK\n",
+      },
+    },
+  ]);
+  await callExec(model.methods.configure.execute, { _run: run }, context);
+  const cfgRes = writes.find((w) => w.spec === "config");
+  // decoded + trimmed (trailing newline from the key file dropped).
+  assertEquals(cfgRes?.data.borgPublicKey, pubtext.trim());
+});
+
+Deno.test("configure: empty PUBKEY_B64 marker maps to null borgPublicKey", async () => {
+  const { context, writes } = fakeContext(baseCfg);
+  const { run } = scriptedRunner([
+    { match: "--version", result: { stdout: "borgmatic 1.9.14\n" } },
+    {
+      match: "config validate",
+      result: {
+        stdout: "SWAMP_BORG_KEYGEN_SKIP\nSWAMP_BORG_PUBKEY_B64=\n" +
+          "SWAMP_BORG_VALIDATE_OK\nSWAMP_BORG_CONFIG_OK\nSWAMP_BORG_TIMER_OK\n",
+      },
+    },
+  ]);
+  await callExec(model.methods.configure.execute, { _run: run }, context);
+  const cfgRes = writes.find((w) => w.spec === "config");
+  assertEquals(cfgRes?.data.borgPublicKey, null);
 });
 
 Deno.test("configure: validate failure records failed attempt and throws", async () => {

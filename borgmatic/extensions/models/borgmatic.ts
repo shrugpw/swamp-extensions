@@ -122,6 +122,32 @@ const RetentionSchema = z.object({
   keepYearly: z.number().int().nonnegative().optional(),
 });
 
+/**
+ * One borgmatic consistency check with an optional run frequency. The frequency
+ * regex requires a SINGLE LITERAL SPACE between the count and the unit (not
+ * `\s+`, which would also match a newline and let a crafted value break out of
+ * the `frequency:` line in the rendered config).
+ */
+const ConsistencyCheckSchema = z.object({
+  name: z
+    .enum(["repository", "archives", "data", "spot", "extract"])
+    .describe("borgmatic consistency check name"),
+  frequency: z
+    .string()
+    .regex(
+      /^(always|\d+ (hour|day|week|month|year)s?)$/,
+      'frequency must be "always" or "<N> <unit>" (unit = ' +
+        'hour/day/week/month/year) with a single space, e.g. "1 day", "2 weeks"',
+    )
+    .optional()
+    .describe(
+      'How often to run this check: "always" or "<N> <unit>" with a single ' +
+        'space, e.g. "1 day", "1 week", "1 month". Throttles an expensive ' +
+        "check (data = --verify-data reads every chunk) independent of the " +
+        "daily cycle. Omit to run the check every cycle.",
+    ),
+});
+
 // Input-validation charsets. These values get spliced into ssh argv (which the
 // remote sshd re-joins into a shell command), shell scripts, systemd drop-ins,
 // or borg's `ssh_command` — so they must reject shell/newline metacharacters.
@@ -204,6 +230,31 @@ const GlobalArgsSchema = z.object({
     .array(z.string())
     .default([])
     .describe("Directories to back up (borgmatic source_directories)"),
+  excludePatterns: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "Paths/globs to EXCLUDE from the backup (borgmatic exclude_patterns), one " +
+        "rendered entry per pattern. Prefer ABSOLUTE-anchored patterns (e.g. " +
+        "/home/user/.cache): borg front-anchors fm:/sh: patterns to the START " +
+        "of the archived path, so a bare relative '.cache' will NOT match an " +
+        "absolute source path. Use a leading **/ ONLY when you truly mean " +
+        "match-at-any-depth, since **/cache also drops a real directory named " +
+        "'cache' at any level (silent data loss — the exact thing this guards " +
+        "against). The model renders each pattern verbatim with a style prefix; " +
+        "it does NOT rewrite anchoring.",
+    ),
+  excludePatternStyle: z
+    .enum(["fm", "sh", "re", "pp", "pf"])
+    .default("sh")
+    .describe(
+      "borg pattern style inlined onto every BARE excludePatterns entry " +
+        "(exclude_patterns has no pattern_style option, so the style is " +
+        "prefixed per pattern). sh: (default) = shell-style globs where * is a " +
+        "single path component and **/ crosses directory levels; fm: = fnmatch " +
+        "(borg's own default) where * also spans '/'. A pattern already carrying " +
+        "an explicit fm:/sh:/re:/pp:/pf: prefix passes through untouched.",
+    ),
   repositories: z
     .array(RepositorySchema)
     .default([])
@@ -241,6 +292,37 @@ const GlobalArgsSchema = z.object({
     keepWeekly: 4,
     keepMonthly: 6,
   }),
+  appendOnly: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Shorthand for an append-only repo: render skip_actions:[prune,compact] " +
+        "so the scheduled run never deletes or rewrites segments (both are " +
+        "REJECTED by an append-only borg server). Omitting keep_* is NOT enough " +
+        "— borgmatic's default action set still runs compact every cycle. " +
+        "Overridden by skipActions when that is set. Requires borgmatic >=1.8.5 " +
+        "(enforced at the config-validate apply-gate, not proactively).",
+    ),
+  skipActions: z
+    .array(z.enum(["create", "prune", "compact", "check"]))
+    .optional()
+    .describe(
+      "Explicit borgmatic skip_actions list — actions borgmatic skips even when " +
+        "its default set would run them. Overrides appendOnly when set. Requires " +
+        "borgmatic >=1.8.5: an unknown skip_actions key fails `borgmatic config " +
+        "validate` at the apply-gate, the ONLY version-floor enforcement (the " +
+        "version probe drops the patch number, so no proactive >=1.8.5 check is " +
+        "possible).",
+    ),
+  checks: z
+    .array(ConsistencyCheckSchema)
+    .default([])
+    .describe(
+      "Per-check consistency-check frequencies (borgmatic `checks`), e.g. " +
+        "repository/'1 day', archives/'1 week', data/'1 month'. Throttles " +
+        "expensive integrity checks independent of the daily cycle. All checks " +
+        "are read-only, so they compose with append-only skip_actions.",
+    ),
   hooks: HooksSchema.default({}),
 
   // --- lifecycle toggles ---
@@ -436,6 +518,20 @@ function yamlDq(s: string): string {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** borg pattern-style prefixes a pattern may already carry. */
+const PATTERN_STYLE_RE = /^(fm|sh|re|pp|pf):/;
+
+/**
+ * Prefix a BARE exclude pattern with the configured borg pattern style; a
+ * pattern that already carries an explicit fm:/sh:/re:/pp:/pf: prefix passes
+ * through untouched. exclude_patterns has no pattern_style option, so the style
+ * must be inlined per pattern. Anchoring is NOT rewritten — the pattern is used
+ * verbatim after the style prefix.
+ */
+export function styledPattern(pattern: string, style: string): string {
+  return PATTERN_STYLE_RE.test(pattern) ? pattern : `${style}:${pattern}`;
+}
+
 /**
  * Render a borgmatic **flat** config, version-aware on the hook syntax.
  *
@@ -471,6 +567,14 @@ export function renderBorgmaticConfig(
     "source_directories:",
   );
   for (const d of cfg.sourceDirectories) L.push(`    - ${yamlDq(d)}`);
+  // Exclude patterns — one rendered entry per pattern (never space-joined),
+  // each style-prefixed. Default-off (empty) renders nothing.
+  if (cfg.excludePatterns.length) {
+    L.push("", "exclude_patterns:");
+    for (const p of cfg.excludePatterns) {
+      L.push(`    - ${yamlDq(styledPattern(p, cfg.excludePatternStyle))}`);
+    }
+  }
   L.push("", "repositories:");
   for (const r of cfg.repositories) {
     L.push(`    - path: ${yamlDq(r.path)}`);
@@ -504,6 +608,25 @@ export function renderBorgmaticConfig(
   L.push(`keep_weekly: ${r.keepWeekly}`);
   L.push(`keep_monthly: ${r.keepMonthly}`);
   if (r.keepYearly !== undefined) L.push(`keep_yearly: ${r.keepYearly}`);
+
+  // Skipped actions (append-only). skipActions overrides appendOnly; appendOnly
+  // alone expands to [prune, compact] (the two actions an append-only server
+  // rejects). Values are a closed enum, so no quoting is needed. Needs borgmatic
+  // >=1.8.5 — enforced by the config-validate apply-gate, not here.
+  const skip = cfg.skipActions ?? (cfg.appendOnly ? ["prune", "compact"] : []);
+  if (skip.length) {
+    L.push("", "skip_actions:");
+    for (const a of skip) L.push(`    - ${a}`);
+  }
+
+  // Consistency-check frequency throttling.
+  if (cfg.checks.length) {
+    L.push("", "checks:");
+    for (const c of cfg.checks) {
+      L.push(`    - name: ${c.name}`);
+      if (c.frequency) L.push(`      frequency: ${yamlDq(c.frequency)}`);
+    }
+  }
 
   // Native database dump hooks (top-level *_databases keys; version-stable).
   const dbs = cfg.hooks.databases ?? [];
@@ -643,6 +766,10 @@ export function buildConfigureScript(
     `else`,
     `  echo ${M}KEYGEN_SKIP`,
     `fi`,
+    // Surface the borg public key so callers can authorize it on the repo
+    // provider (e.g. @shrug/borgwarehouse authorizeKey). Emitted UNCONDITIONALLY
+    // after the keygen guard — on both the generated and pre-existing paths.
+    `echo ${M}PUBKEY_B64=$(base64 -w0 < "$KEYP.pub" 2>/dev/null)`,
     // --- render → validate → swap ---
     `mkdir -p ${cfgDir} || { echo ${M}MKDIR_FAIL >&2; exit 45; }`,
     `TMP="$(mktemp)" || { echo ${M}MKTEMP_FAIL >&2; exit 46; }`,
@@ -957,6 +1084,14 @@ const ConfigSchema = z.object({
       "Rendered config with the passphrase REDACTED (never the secret)",
     ),
   timerEnabled: z.boolean(),
+  borgPublicKey: z
+    .string()
+    .nullish()
+    .describe(
+      "The on-host borg SSH public key (host→repo hop). Surfaced so a caller " +
+        "can authorize it on the repo provider (e.g. @shrug/borgwarehouse " +
+        "authorizeKey) via CEL. null when the key could not be read.",
+    ),
   appliedAt: z.iso.datetime(),
 });
 
@@ -1069,7 +1204,7 @@ async function detectVersion(
  */
 export const model = {
   type: "@shrug/borgmatic",
-  version: "2026.08.07.1",
+  version: "2026.11.19.1",
   description:
     "Host agent for borgmatic backups over SSH. Version-aware config rendering " +
     "(commands: on ≥2.0, before_backup: on 1.8–1.9), apply-gated on `borgmatic " +
@@ -1195,6 +1330,10 @@ export const model = {
         );
 
         const contentSha256 = await sha256Hex(renderedReal);
+        // Surface the borg public key (empty marker → null) for authorizeKey.
+        const mk = parseMarkers(res.stdout);
+        const pub = base64ToStr(mk.PUBKEY_B64 ?? "").trim();
+        const borgPublicKey = pub || null;
         const confHandle = await context.writeResource(
           "config",
           resourceInstanceName(cfg),
@@ -1209,6 +1348,7 @@ export const model = {
             contentSha256,
             renderedConfig: renderedForResource,
             timerEnabled: cfg.schedule ? /TIMER_OK/.test(res.stdout) : false,
+            borgPublicKey,
             appliedAt: new Date().toISOString(),
           },
         );
