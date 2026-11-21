@@ -23,6 +23,7 @@ import {
   model,
   newestArchiveTime,
   parseBorgmaticVersion,
+  parseDryRunFileList,
   parseMarkers,
   redactConfig,
   redactPassphraseLeaks,
@@ -838,6 +839,78 @@ Deno.test("backup: transport failure (255) → failed attempt + throw", async ()
     )
   );
   assertEquals(writes.find((w) => w.spec === "attempt")?.data.success, false);
+});
+
+Deno.test("parseDryRunFileList: strips status prefix, keeps absolute paths", () => {
+  const out = parseDryRunFileList(
+    [
+      "- /home/user/myapp/config.yaml",
+      "A /home/user/myapp/data/db.sqlite3",
+      "M /home/user/myapp/logs/app.log",
+      "U /home/user/myapp/static/logo.png",
+      'Creating archive at "ssh://example/repo::host-2026-07-16"',
+      "Archive name: host-2026-07-16T12:00:00",
+      "Number of files: 4",
+      "relative/not/absolute.txt",
+      "",
+    ].join("\n"),
+  );
+  assertEquals(out, [
+    "/home/user/myapp/config.yaml",
+    "/home/user/myapp/data/db.sqlite3",
+    "/home/user/myapp/logs/app.log",
+    "/home/user/myapp/static/logo.png",
+  ]);
+});
+
+Deno.test("backup: dryRun adds --list and parses files/fileCount", async () => {
+  const { context, writes } = fakeContext(baseCfg);
+  const { run, calls } = scriptedRunner([
+    {
+      match: "create",
+      result: {
+        stdout: [
+          "- /home/user/myapp/config.yaml",
+          "- /home/user/myapp/data/db.sqlite3",
+          "Archive name: host-2026-07-16T12:00:00",
+          "Number of files: 2",
+        ].join("\n"),
+      },
+    },
+  ]);
+  await callExec(
+    model.methods.backup.execute,
+    { dryRun: true, _run: run },
+    context,
+  );
+  // The built borg action carries --list on a dry-run.
+  assertEquals(calls.some((s) => s.includes("--list")), true);
+  const b = writes.find((w) => w.spec === "backup");
+  assertEquals(b?.data.files, [
+    "/home/user/myapp/config.yaml",
+    "/home/user/myapp/data/db.sqlite3",
+  ]);
+  assertEquals(b?.data.fileCount, 2);
+  assertEquals(b?.data.dryRun, true);
+});
+
+Deno.test("backup: real run leaves files/fileCount null and omits --list", async () => {
+  const { context, writes } = fakeContext(baseCfg);
+  const { run, calls } = scriptedRunner([
+    {
+      match: "create",
+      result: { stdout: "Archive name: host-2026-07-16T12:00:00\nStats...\n" },
+    },
+  ]);
+  await callExec(
+    model.methods.backup.execute,
+    { dryRun: false, _run: run },
+    context,
+  );
+  assertEquals(calls.some((s) => s.includes("--list")), false);
+  const b = writes.find((w) => w.spec === "backup");
+  assertEquals(b?.data.files, null);
+  assertEquals(b?.data.fileCount, null);
 });
 
 Deno.test("prune/compact/check: op resource + attempt", async () => {

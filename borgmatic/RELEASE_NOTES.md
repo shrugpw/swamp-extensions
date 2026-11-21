@@ -1,3 +1,16 @@
+## 2026.11.21.1
+
+**New:** the `backup` method now surfaces the dry-run file list as structured
+data. On a dry-run the borg `create` action adds `--list`, and the per-file
+output is parsed into two new `backup` resource fields: `files` (the absolute
+paths borg would archive) and `fileCount`. Both are null on real backups so
+normal runs don't bloat the datastore. A workflow can now assert via CEL (e.g.
+`data.latest("<name>","backup").attributes.files`) that no forbidden tenant path
+is in the set before the first real append-only backup. The `output` field is
+unchanged (still the passphrase-redacted `--stats` tail). Also aligns the
+in-source model `version` constant with the manifest (the two had drifted:
+manifest `2026.11.19.2` vs in-source `2026.11.19.1`).
+
 ## 2026.11.19.2
 
 **Fix:** `sshExec` now kills and reaps the ssh child on a STDIN-write error. If

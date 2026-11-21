@@ -893,6 +893,24 @@ export function parseMarkers(stdout: string): Record<string, string> {
 }
 
 /**
+ * Parse the per-file list emitted by `borg create --list` (surfaced only on a
+ * dry-run so a workflow can assert, via CEL, that no forbidden tenant path is
+ * in it before the first real append-only backup). borg prefixes each item
+ * with a one-char change-status indicator (`A` added, `M` modified, `U`
+ * unchanged, `-` dry-run/excluded, etc.) and whitespace, then the absolute
+ * path. We strip that prefix and keep only lines that resolve to an absolute
+ * path (starting with `/`), ignoring stats, log, and progress lines.
+ */
+export function parseDryRunFileList(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^(\S)\s+(\/.*)$/);
+    if (m) out.push(m[2].replace(/\s+$/, ""));
+  }
+  return out;
+}
+
+/**
  * Extract the newest archive's ISO time from `borgmatic repo-list --json`
  * output (borg's list JSON: `[{"archives":[{"name","time"}...]}]` or the bare
  * `{"archives":[…]}` shape). Returns null when there are no archives.
@@ -1139,6 +1157,15 @@ const BackupSchema = z.object({
   dryRun: z.boolean(),
   archiveName: z.string().nullable(),
   output: z.string().describe("Tail of borgmatic create --stats output"),
+  files: z.array(z.string()).nullable().describe(
+    "Dry-run only: absolute paths borg would archive, parsed from " +
+      "`create --list` (null on real backups so normal runs don't bloat " +
+      "the datastore)",
+  ),
+  fileCount: z.number().nullable().describe(
+    "Dry-run only: number of would-be-archived paths (length of `files`); " +
+      "null on real backups",
+  ),
   at: z.iso.datetime(),
 });
 
@@ -1232,7 +1259,7 @@ async function detectVersion(
  */
 export const model = {
   type: "@shrug/borgmatic",
-  version: "2026.11.19.1",
+  version: "2026.11.21.1",
   description:
     "Host agent for borgmatic backups over SSH. Version-aware config rendering " +
     "(commands: on ≥2.0, before_backup: on 1.8–1.9), apply-gated on `borgmatic " +
@@ -1256,7 +1283,10 @@ export const model = {
       garbageCollection: 20,
     },
     "backup": {
-      description: "Record of a borgmatic create (archive name + stats tail).",
+      description:
+        "Record of a borgmatic create (archive name + stats tail). On a " +
+        "dry-run also carries `files` (the absolute paths borg would archive, " +
+        "parsed from `create --list`) and `fileCount`; both null on real runs.",
       schema: BackupSchema,
       lifetime: "infinite",
       garbageCollection: 100,
@@ -1440,7 +1470,8 @@ export const model = {
     backup: {
       description:
         "Run `borgmatic create --stats` now (ad-hoc backup). Records the archive " +
-        "name + stats tail and audits the attempt.",
+        "name + stats tail and audits the attempt. On a dry-run also adds " +
+        "`--list` and records the would-be-archived paths in `files`/`fileCount`.",
       arguments: z.object({
         dryRun: z.boolean().default(false).describe("Pass --dry-run"),
         _run: z.any().optional().describe(
@@ -1454,7 +1485,11 @@ export const model = {
         const cfg = context.globalArgs;
         const run: TargetRunner = args._run ?? sshExec;
         const action = ["create", "--stats", "--verbosity", "1"];
-        if (args.dryRun) action.push("--dry-run");
+        // On a dry-run, add --list so borg emits one line per would-be-archived
+        // file; we parse those into the structured `files` field for CEL
+        // assertions. Never on a real backup (append-only writes don't need the
+        // list, and it would bloat the datastore).
+        if (args.dryRun) action.push("--dry-run", "--list");
         const { res, handle: attemptHandle } = await recordAttempt(
           context,
           "backup",
@@ -1466,6 +1501,7 @@ export const model = {
         );
         const combined = res.stdout + "\n" + res.stderr;
         const m = combined.match(/Archive name:\s*(\S+)/);
+        const files = args.dryRun ? parseDryRunFileList(combined) : null;
         const handle = await context.writeResource(
           "backup",
           resourceInstanceName(cfg),
@@ -1475,6 +1511,8 @@ export const model = {
             dryRun: args.dryRun,
             archiveName: m ? m[1] : null,
             output: redactPassphraseLeaks(combined).slice(-3000),
+            files,
+            fileCount: files ? files.length : null,
             at: new Date().toISOString(),
           },
         );
