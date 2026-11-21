@@ -443,6 +443,13 @@ Deno.test("addRepo: creates when key absent (POST then re-GET)", async () => {
   assertEquals(slot?.data.changed, true);
   assertEquals(slot?.data.repositoryName, "c055df60");
   assertEquals(calls.some((c) => c.method === "POST"), true);
+  // Regression: the POST body must carry the quota as `storageSize` (GB), the
+  // field BorgWarehouse's API expects. An earlier `size:` was dropped by the API
+  // -> HTTP 400 "Storage Size must be a positive integer".
+  const post = calls.find((c) => c.method === "POST");
+  const postBody = JSON.parse(post!.body ?? "{}");
+  assertEquals(postBody.storageSize, 100);
+  assertEquals(postBody.size, undefined);
 });
 
 Deno.test("addRepo: 409 duplicate-key backstop re-GETs the existing repo", async () => {

@@ -814,7 +814,7 @@ function slotKey(
 
 export const model = {
   type: "@shrug/borgwarehouse",
-  version: "2026.11.19.1",
+  version: "2026.11.21.1",
   description:
     "Swamp-native control of a BorgWarehouse backup-monitor server. HTTP REST " +
     "for all CRUD/alert/key/compact/status-cron (never races the app's lowdb " +
@@ -1003,7 +1003,11 @@ export const model = {
               body: {
                 alias: args.alias,
                 sshPublicKey: args.sshPublicKey,
-                size: args.storageSizeGb,
+                // BorgWarehouse's POST /repositories expects `storageSize` (GB),
+                // matching the field it returns on GET. An earlier `size:` was
+                // silently dropped by the API -> HTTP 400 "Storage Size must be
+                // a positive integer". See the addRepo POST-body regression test.
+                storageSize: args.storageSizeGb,
                 comment: args.comment,
                 alert: args.alert,
                 appendOnlyMode: args.appendOnlyMode,
