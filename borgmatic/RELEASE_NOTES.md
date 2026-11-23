@@ -11,6 +11,14 @@ unchanged (still the passphrase-redacted `--stats` tail). Also aligns the
 in-source model `version` constant with the manifest (the two had drifted:
 manifest `2026.11.19.2` vs in-source `2026.11.19.1`).
 
+**Fix:** the rendered `timer.d` drop-in now emits a bare `OnCalendar=` reset
+line before setting the configured value. `systemd` treats `OnCalendar=` as an
+additive list across drop-ins, so without the reset the distro-packaged base
+unit's `OnCalendar=daily` (midnight) kept firing alongside the configured
+schedule, producing two triggers per day. The reset clears the inherited value
+so only the configured schedule remains. `RandomizedDelaySec`/`Persistent` are
+scalars (last-wins) and need no reset.
+
 ## 2026.11.19.2
 
 **Fix:** `sshExec` now kills and reaps the ssh child on a STDIN-write error. If
