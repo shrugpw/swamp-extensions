@@ -817,6 +817,11 @@ export function buildConfigureScript(
     const s = cfg.schedule;
     const dropin = [
       "[Timer]",
+      // Clear the base unit's OnCalendar list first: systemd treats OnCalendar as
+      // additive across drop-ins, so without a bare reset the base `OnCalendar=daily`
+      // (00:00) keeps firing alongside ours. The empty assignment resets the list,
+      // then the next line is the only trigger.
+      "OnCalendar=",
       `OnCalendar=${s.onCalendar}`,
       `RandomizedDelaySec=${s.randomizedDelay}`,
       `Persistent=${s.persistent ? "true" : "false"}`,

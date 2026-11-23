@@ -590,6 +590,18 @@ Deno.test("configure script omits timer when schedule unset", () => {
   assertEquals(/systemctl enable --now borgmatic\.timer/.test(s), false);
 });
 
+Deno.test("configure timer drop-in resets OnCalendar before setting it", () => {
+  // systemd OnCalendar is additive across drop-ins; without a bare `OnCalendar=`
+  // reset the base unit's `OnCalendar=daily` keeps firing alongside ours.
+  const s = buildConfigureScript(baseCfg, "RENDERED\n");
+  const m = s.match(
+    /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \\\n\s*> \/etc\/systemd\/system\/borgmatic\.timer\.d\/swamp-override\.conf/,
+  );
+  assertEquals(m !== null, true);
+  const dropin = atob(m![1]);
+  assertMatch(dropin, /\[Timer\]\nOnCalendar=\nOnCalendar=/);
+});
+
 Deno.test("configure script emits the PUBKEY_B64 marker OUTSIDE the keygen if/else", () => {
   const s = buildConfigureScript(baseCfg, "RENDERED\n");
   assertMatch(s, /SWAMP_BORG_PUBKEY_B64=\$\(base64 -w0 < "\$KEYP\.pub"/);
