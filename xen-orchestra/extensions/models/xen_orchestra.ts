@@ -1992,6 +1992,21 @@ export const model = {
     "updateSchedule/deleteSchedule write over the JSON-RPC transport " +
     "(schedule.create/set/delete; deleteSchedule is dryRun-gated, default true).",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      // 2026.11.18.1 -> 2026.11.21.5 added the backup-management surface
+      // (repository/task/archive/schedule CRUD) and a WebSocket JSON-RPC
+      // transport; none of it changed globalArguments (baseUrl, authToken,
+      // caCert, requestTimeoutMs are unchanged). The intermediate .21.1-.21.4
+      // versions were never published, so the only live predecessor is
+      // 2026.11.18.1. Pure pass-through: its only job is to advance an instance
+      // pinned to the prior version to 2026.11.21.5 instead of stranding
+      // against the installed type.
+      toVersion: "2026.11.21.5",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "vm": {
       description: "A managed VM's normalized live-state snapshot",
