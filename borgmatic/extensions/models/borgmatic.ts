@@ -1272,6 +1272,18 @@ export const model = {
     "backup/prune/compact/check, and queryable listArchives/info/status. Every " +
     "mutation is audited on both success and failure.",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      // 2026.11.21.1 added dry-run --list file surfacing (two nullable `backup`
+      // resource fields) and a timer drop-in OnCalendar reset. Neither touched
+      // globalArguments, so this is a pure pass-through whose only job is to
+      // advance an existing instance's typeVersion to 2026.11.21.1 -- without it
+      // instances pinned to an older version strand against the installed type.
+      toVersion: "2026.11.21.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "config": {
       description:

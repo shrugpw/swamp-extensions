@@ -19,6 +19,11 @@ schedule, producing two triggers per day. The reset clears the inherited value
 so only the configured schedule remains. `RandomizedDelaySec`/`Persistent` are
 scalars (last-wins) and need no reset.
 
+**Hygiene:** adds a no-op `upgrades` entry (`toVersion 2026.11.21.1`,
+pass-through `upgradeAttributes`). Neither change touched `globalArguments`, but
+the entry advances an existing instance's `typeVersion` on next method run so an
+instance pinned to an older version doesn't strand against the installed type.
+
 ## 2026.11.19.2
 
 **Fix:** `sshExec` now kills and reaps the ssh child on a STDIN-write error. If
