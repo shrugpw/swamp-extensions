@@ -1590,7 +1590,7 @@ Deno.test("createSR: creates an NFS ISO SR (POST /srs) then snapshots it", async
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       name_description: "NFS ISO library",
       _fetch: f,
     }),
@@ -1604,7 +1604,7 @@ Deno.test("createSR: creates an NFS ISO SR (POST /srs) then snapshots it", async
     hostId: "host-bc",
     name_label: "ISOs",
     SR_type: "iso",
-    device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+    device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
     name_description: "NFS ISO library",
   });
   assertEquals(writes[0].name, "sr:sr-new");
@@ -1633,7 +1633,7 @@ Deno.test("createSR: reuses an existing same-name+type SR when device_config mat
         uuid: "sr-existing",
         name_label: "ISOs",
         SR_type: "iso",
-        device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+        device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       },
     },
   ]);
@@ -1643,7 +1643,7 @@ Deno.test("createSR: reuses an existing same-name+type SR when device_config mat
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1691,7 +1691,7 @@ Deno.test("createSR: a same-name ISO SR of a DIFFERENT transport is NOT reused (
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1772,7 +1772,7 @@ Deno.test("createSR: same name+type in a DIFFERENT pool is not reused (POST happ
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1806,7 +1806,7 @@ Deno.test("createSR: resolves an async task ref (taskId -> poll -> id)", async (
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1836,7 +1836,7 @@ Deno.test("createSR: a failed host lookup falls back to name+type match (best-ef
       match: (u, m) => m === "GET" && u.includes("/srs/sr-anywhere"),
       body: {
         uuid: "sr-anywhere",
-        device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+        device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       },
     },
   ]);
@@ -1846,7 +1846,7 @@ Deno.test("createSR: a failed host lookup falls back to name+type match (best-ef
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1912,14 +1912,14 @@ Deno.test("createSR: warns on multiple ambiguous device_config matches", async (
       match: (u, m) => m === "GET" && u.includes("/srs/sr-a"),
       body: {
         uuid: "sr-a",
-        device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+        device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       },
     },
     {
       match: (u, m) => m === "GET" && u.includes("/srs/sr-b"),
       body: {
         uuid: "sr-b",
-        device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+        device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       },
     },
   ]);
@@ -1929,7 +1929,7 @@ Deno.test("createSR: warns on multiple ambiguous device_config matches", async (
       hostId: "host-bc",
       name_label: "ISOs",
       SR_type: "iso",
-      device_config: { location: "10.50.10.5:/export/isos", type: "nfs_iso" },
+      device_config: { location: "192.0.2.5:/export/isos", type: "nfs_iso" },
       _fetch: f,
     }),
     context,
@@ -1942,14 +1942,14 @@ Deno.test("createSR: warns on multiple ambiguous device_config matches", async (
 
 Deno.test("deviceConfigMatches: compares non-secret keys, ignores *pass*, fails on absent", () => {
   const intended = {
-    location: "10.50.10.5:/export/isos",
+    location: "192.0.2.5:/export/isos",
     type: "nfs_iso",
     password: "shouldbeignored",
   };
   // full non-secret match (password not compared) -> true
   assertEquals(
     deviceConfigMatches(intended, {
-      location: "10.50.10.5:/export/isos",
+      location: "192.0.2.5:/export/isos",
       type: "nfs_iso",
     }),
     true,
@@ -1957,7 +1957,7 @@ Deno.test("deviceConfigMatches: compares non-secret keys, ignores *pass*, fails 
   // transport differs -> false
   assertEquals(
     deviceConfigMatches(intended, {
-      location: "10.50.10.5:/export/isos",
+      location: "192.0.2.5:/export/isos",
       type: "cifs",
     }),
     false,
@@ -3663,7 +3663,7 @@ Deno.test("redactRepoUrl() strips userinfo and query on a parseable URL", () => 
 });
 
 Deno.test("redactRepoUrl() keeps a credential-free URL readable", () => {
-  assertEquals(redactRepoUrl("nfs://1.2.3.4/export"), "nfs://1.2.3.4/export");
+  assertEquals(redactRepoUrl("nfs://192.0.2.4/export"), "nfs://192.0.2.4/export");
   assertEquals(redactRepoUrl("file:///srv/backups"), "file:///srv/backups");
 });
 
