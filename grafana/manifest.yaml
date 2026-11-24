@@ -1,0 +1,37 @@
+manifestVersion: 1
+name: "@shrug/grafana"
+version: "2026.11.23.1"
+description: "Consolidated Grafana swamp-native toolkit, standing alongside the community @keeb/grafana and the prior @shrug/grafana-admin split (neither is renamed or retired here). `@shrug/grafana/instance` forks @keeb/grafana/instance (MIT, keeb) and ports its data-plane methods (discover, pushDashboard, exportDashboard, getDashboard, configureContactPoint, configureNotificationPolicy, pushAlertRule, createAnnotation, queryMetrics), adding orchestrator-safe inline content: pushDashboard/pushAlertRule read their JSON from this extension's bundled additionalFiles via context.extensionFile() (never context.repoDir) or accept it inline (dashboardContent/ruleContent), so a serve-dispatched worker with no repo checkout can push. queryLogs (the Loki sibling of queryMetrics, previously a separate @shrug/grafana-ext merge-extension) is folded in as a native method. `@shrug/grafana/admin` ports @shrug/grafana-admin/instance's control-plane methods (listOrgs, ensureOrg, ensureDatasource, ensureServiceAccount, configureWebhookContactPoint, ensureFolder) over server admin basic-auth, for operations an org-scoped SA token cannot do."
+
+license: MIT
+
+repository: https://github.com/shrugpw/swamp-extensions
+
+paths:
+  base: manifest
+
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+
+# extensions/models/grafana_instance.ts -> export const model (@shrug/grafana/instance)
+# extensions/models/grafana_admin.ts    -> export const model (@shrug/grafana/admin)
+models:
+  - extensions/models/grafana_instance.ts
+  - extensions/models/grafana_admin.ts
+
+skills:
+  - shrug-grafana
+
+# Both talk HTTPS to the Grafana API via fetch(); no host binaries are shelled
+# out, so this runs anywhere.
+platforms: []
+
+labels:
+  - grafana
+  - observability
+  - dashboards
+  - alerting
+  - service-accounts
+  - loki
+  - logs
