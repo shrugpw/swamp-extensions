@@ -28,6 +28,7 @@ fetches the published, versioned artifact from the registry.
 | Extension | Description |
 |-----------|-------------|
 | [`@shrug/content-studio`](content-studio/) | Keep a body of documents sendable: a reusable content hub (`library`) plus a sendability gate (`document`) that catches unresolved placeholders, draft scaffolding, and internal-filename leakage. |
+| [`@shrug/xen-orchestra`](xen-orchestra/) | Xen Orchestra / XCP-ng VM lifecycle over the REST API -- create/start/stop/snapshot/migrate/clone VMs, disk provisioning, discovery, plus backup repository/task/archive/schedule management (REST + WebSocket JSON-RPC). |
 
 ## License
 

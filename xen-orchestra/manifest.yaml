@@ -1,0 +1,29 @@
+manifestVersion: 1
+name: "@shrug/xen-orchestra"
+version: "2026.11.21.5"
+license: MIT
+description: "Xen Orchestra (XO) / XCP-NG VM lifecycle model over the REST API (/rest/v0): create a VM from a template with cloud-init, start, stop (clean/hard), snapshot, migrate (cross-host/pool with SR + VIF remap), clone, and destroy, plus VM/host/template/pool/SR/network discovery so UUIDs are resolved rather than hardcoded. Disk provisioning: createVdi creates a blank VDI on an SR (POST /vdis), importFromUrl imports a disk image from a URL into an SR as a new VDI, and attachVdi/detachVdi attach/detach an existing VDI to a VM as a VBD - so a cloud image can be seeded onto a pool that lacks it and booted (import the disk, create a diskless VM with cloud-init, attach the VDI as the bootable boot disk, start), or a dedicated data disk stood up (createVdi then attachVdi). Registers XCP-NG hosts with XO (addServer/listServers) so new pools become migrate targets. Token auth via the `authenticationToken` cookie (vaulted); plain HTTPS through one injectable fetch seam, TLS verification always on (optional private-CA trust via caCert). Backup schedules: listSchedules/getSchedule read and runSchedule triggers an immediate run over REST, while createSchedule/updateSchedule/deleteSchedule write over the WebSocket JSON-RPC transport (schedule.create/set/delete; deleteSchedule is dryRun-gated, default true)."
+
+repository: https://github.com/shrugpw/swamp-extensions
+
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+
+models:
+  - xen_orchestra.ts
+
+# Talks HTTPS to the XO REST API via fetch() - pure on every method EXCEPT
+# importFromUrl's conversion branch, which shells out to `qemu-img` (host
+# binary) to turn a qcow2/vmdk source into the VHD/raw XO import wants. A
+# vhd/raw source URL skips that and stays pure. The exec host therefore needs
+# qemu-img (and Deno run/read/write perms) only when converting; discovery and
+# lifecycle methods still run anywhere. Left universal (no platform pins)
+# because the dependency is conditional, not load-bearing.
+platforms: []
+
+labels:
+  - xen-orchestra
+  - xcp-ng
+  - vm
+  - infrastructure
